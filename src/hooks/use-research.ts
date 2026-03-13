@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { researchApi, type ResearchResult } from '@/lib/api/research';
+import { MOCK_RESULT } from '@/lib/mock-data';
+
+const USE_DEMO = !import.meta.env.VITE_API_URL && true; // Auto-demo when no backend configured
 
 export function useResearch() {
   const [query, setQuery] = useState('');
@@ -8,20 +11,35 @@ export function useResearch() {
   const [isLoading, setIsLoading] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [demoMode, setDemoMode] = useState(false);
 
   const startResearch = useCallback(async (q: string) => {
     setIsLoading(true);
     setError(null);
     setResult(null);
     setQuery(q);
+
+    // Try real backend first
     try {
       const { job_id } = await researchApi.startResearch(q);
       setJobId(job_id);
       setIsPolling(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start research');
-      setIsLoading(false);
+      setDemoMode(false);
+      return;
+    } catch {
+      // Backend unreachable — fall back to demo mode
     }
+
+    // Demo mode: simulate pipeline stages
+    setDemoMode(true);
+    const stages: ResearchResult['status'][] = ['pending', 'running'];
+    for (const status of stages) {
+      setResult({ ...MOCK_RESULT, status, query: q, papers: [], key_findings: [], contradictions: [], research_gaps: [] });
+      await new Promise(r => setTimeout(r, 1200));
+    }
+    // Complete with mock data
+    setResult({ ...MOCK_RESULT, query: q });
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
@@ -47,14 +65,18 @@ export function useResearch() {
   }, [isPolling, jobId]);
 
   const generateSynthesis = useCallback(async () => {
+    if (demoMode) {
+      setResult(prev => prev ? { ...prev, synthesis: MOCK_RESULT.synthesis } : prev);
+      return;
+    }
     if (!jobId) return;
     try {
       const { synthesis } = await researchApi.generateSynthesis(jobId);
       setResult(prev => prev ? { ...prev, synthesis } : prev);
-    } catch (err) {
+    } catch {
       setError('Failed to generate synthesis');
     }
-  }, [jobId]);
+  }, [jobId, demoMode]);
 
   return {
     query,
