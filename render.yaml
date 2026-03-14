@@ -17,10 +17,7 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: FRONTEND_ORIGIN
-        fromService:
-          type: web
-          name: researchhub-frontend
-          property: url
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
@@ -51,10 +48,7 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: researchhub-backend
-          property: url
+        sync: false
 
 databases:
   - name: researchhub-postgres
