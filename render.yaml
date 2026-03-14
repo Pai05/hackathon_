@@ -1,10 +1,4 @@
 services:
-  - type: pserv
-    name: researchhub-postgres
-    env: postgres
-    plan: free
-    ipAllowList: []
-
   - type: web
     name: researchhub-backend
     env: node
@@ -61,3 +55,7 @@ services:
           type: web
           name: researchhub-backend
           property: url
+
+databases:
+  - name: researchhub-postgres
+    plan: free
