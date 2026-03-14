@@ -5,6 +5,7 @@
  * Jobs are stored in memory with full status tracking so the client can poll.
  */
 import crypto from "crypto";
+import prisma from "../db.js";
 import { QueryPlannerAgent } from "../agents/query-planner-agent.js";
 import { PaperSearchAgent } from "../agents/paper-search-agent.js";
 import { EvidenceAgent } from "../agents/evidence-agent.js";
@@ -13,7 +14,7 @@ import { SynthesisAgent } from "../agents/synthesis-agent.js";
 /** In-memory job store: jobId → JobState */
 const jobs = new Map();
 
-const JOB_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const JOB_TTL_MS = 30 * 60 * 1000;
 
 function cleanupOldJobs() {
   const cutoff = Date.now() - JOB_TTL_MS;
@@ -23,10 +24,13 @@ function cleanupOldJobs() {
 }
 
 /**
+/**
  * Starts a new research job asynchronously.
+ * @param {string} query
+ * @param {string} userId  — DB user id from JWT; required to persist the job.
  * Returns the jobId immediately; caller should poll getJobStatus(jobId).
  */
-export function startResearch(query) {
+export function startResearch(query, userId) {
   cleanupOldJobs();
 
   if (!query || typeof query !== "string" || query.trim().length === 0) {
@@ -37,6 +41,7 @@ export function startResearch(query) {
   const state = {
     jobId,
     query: query.trim(),
+    userId,
     status: "running",       // 'running' | 'completed' | 'failed'
     stage: "query_planning", // current pipeline stage
     logs: [],
@@ -48,20 +53,53 @@ export function startResearch(query) {
 
   jobs.set(jobId, state);
 
+  // Persist initial record to DB (fire & forget — in-memory is the live source)
+  prisma.researchJob
+    .create({ data: { id: jobId, userId, query: query.trim(), status: "running", stage: "query_planning" } })
+    .catch((err) => console.error("[Orchestrator] DB create failed:", err));
+
   // Run pipeline asynchronously (do not await here)
   runPipeline(state).catch((err) => {
     state.status = "failed";
     state.error = err.message;
     state.updatedAt = Date.now();
     console.error(`[Orchestrator] Pipeline failed for job ${jobId}:`, err);
+    prisma.researchJob
+      .update({ where: { id: jobId }, data: { status: "failed", error: err.message, stage: state.stage } })
+      .catch(() => {});
   });
 
   return jobId;
 }
 
 /** Returns current job state or null if not found. */
-export function getJobStatus(jobId) {
-  return jobs.get(jobId) ?? null;
+/**
+ * Returns job state. Checks in-memory first (for active jobs), then falls back
+ * to the DB (for completed/historical jobs after a server restart).
+ */
+export async function getJobStatus(jobId) {
+  const inMemory = jobs.get(jobId);
+  if (inMemory) return inMemory;
+
+  // Attempt DB lookup for completed / historical jobs
+  try {
+    const record = await prisma.researchJob.findUnique({ where: { id: jobId } });
+    if (!record) return null;
+    return {
+      jobId: record.id,
+      query: record.query,
+      userId: record.userId,
+      status: record.status,
+      stage: record.stage,
+      logs: [],
+      result: record.result ? JSON.parse(record.result) : null,
+      error: record.error,
+      createdAt: record.createdAt.getTime(),
+      updatedAt: record.updatedAt.getTime(),
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function runPipeline(state) {
@@ -116,4 +154,12 @@ async function runPipeline(state) {
   state.status = "completed";
   state.stage = "done";
   state.updatedAt = Date.now();
+
+  // Persist completed result to DB for cross-session history
+  prisma.researchJob
+    .update({
+      where: { id: state.jobId },
+      data: { status: "completed", stage: "done", result: JSON.stringify(state.result) },
+    })
+    .catch((err) => console.error("[Orchestrator] DB update failed:", err));
 }
